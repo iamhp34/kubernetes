@@ -30,7 +30,12 @@ if [[ "$ROLE" == "master" && -z "$MASTER_IP" ]]; then
   usage
 fi
 
+USER_NAME="$(logname 2>/dev/null || echo ec2-user)"
+USER_HOME="/home/${USER_NAME}"
+
 echo "===== Kubernetes node setup started for role: $ROLE ====="
+echo "Node hostname: $(hostname)"
+echo "Node IP: $(hostname -I | awk '{print $1}')"
 
 echo "===== Disable swap ====="
 swapoff -a || true
@@ -44,6 +49,7 @@ fi
 
 echo "===== Handle firewall if firewalld exists ====="
 if systemctl list-unit-files | grep -q '^firewalld.service'; then
+  echo "WARNING: firewalld is being disabled (not recommended for production)"
   systemctl stop firewalld || true
   systemctl disable firewalld || true
 fi
@@ -75,11 +81,14 @@ dnf install -y containerd
 mkdir -p /etc/containerd
 containerd config default >/etc/containerd/config.toml
 
-# Match containerd with kubelet's systemd cgroup driver expectation
 sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
 
 systemctl daemon-reload
 systemctl enable --now containerd
+systemctl restart containerd
+
+echo "===== Checking container runtime ====="
+systemctl status containerd --no-pager || true
 
 echo "===== Add Kubernetes repo ====="
 cat >/etc/yum.repos.d/kubernetes.repo <<EOF
@@ -101,13 +110,13 @@ if [[ "$ROLE" == "master" ]]; then
   echo "===== Initialize control plane ====="
   kubeadm init \
     --apiserver-advertise-address="${MASTER_IP}" \
-    --pod-network-cidr="${POD_CIDR}"
+    --pod-network-cidr="${POD_CIDR}" \
+    --ignore-preflight-errors=NumCPU
 
-  echo "===== Configure kubectl for ec2-user ====="
-  USER_HOME="/home/ec2-user"
+  echo "===== Configure kubectl for ${USER_NAME} ====="
   mkdir -p "${USER_HOME}/.kube"
   cp -i /etc/kubernetes/admin.conf "${USER_HOME}/.kube/config"
-  chown -R ec2-user:ec2-user "${USER_HOME}/.kube"
+  chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.kube"
 
   export KUBECONFIG=/etc/kubernetes/admin.conf
 
@@ -122,6 +131,9 @@ if [[ "$ROLE" == "master" ]]; then
   echo "===== Worker join command ====="
   kubeadm token create --print-join-command
 
+  echo "===== IMPORTANT ====="
+  echo "Copy the join command above and run it on worker nodes"
+
 else
   echo "===== Worker setup completed ====="
   echo "Run the join command from the master node, for example:"
@@ -129,3 +141,17 @@ else
 fi
 
 echo "===== Done ====="
+
+: <<'COMMENT'
+# On master node
+curl -O https://raw.githubusercontent.com/iamhp34/kubernetes/main/amazonlinux/k8s-amazonlinux.sh
+chmod +x k8s-amazonlinux.sh
+sudo ./k8s-amazonlinux.sh master 10.0.1.10
+COMMENT
+
+: <<'COMMENT'
+# On worker node
+curl -O https://raw.githubusercontent.com/iamhp34/kubernetes/main/amazonlinux/k8s-amazonlinux.sh
+chmod +x k8s-amazonlinux.sh
+sudo ./k8s-amazonlinux.sh worker
+COMMENT
