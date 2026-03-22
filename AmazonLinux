@@ -134,13 +134,19 @@ sudo ./k8s-amazonlinux.sh master
 # Then run manually on master
 sudo kubeadm init --apiserver-advertise-address=<MASTER_PRIVATE_IP> --pod-network-cidr=192.168.0.0/16
 
-# Install CNI manually on master
+# Configure kubectl for current user
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+# Install Calico CNI on master
 kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.31.4/manifests/calico.yaml
 
-# If needed, rerun script once more on master to place kubeconfig automatically
-sudo ./k8s-amazonlinux.sh master
+# Verify Calico
+kubectl get pods -n kube-system | grep calico
 COMMENT
 
+: <<'COMMENT'
 : <<'COMMENT'
 # On worker node
 curl -L -o k8s-amazonlinux.sh https://raw.githubusercontent.com/iamhp34/kubernetes/main/AmazonLinux
