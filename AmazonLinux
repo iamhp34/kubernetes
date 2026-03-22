@@ -2,18 +2,17 @@
 set -euo pipefail
 
 ROLE="${1:-}"
-MASTER_IP="${2:-}"
-POD_CIDR="${3:-192.168.0.0/16}"
-K8S_VERSION="${4:-v1.35}"
+K8S_VERSION="${2:-v1.35}"
 
 usage() {
   echo "Usage:"
-  echo "  sudo bash k8s-amazonlinux.sh master <MASTER_PRIVATE_IP> [POD_CIDR] [K8S_VERSION]"
-  echo "  sudo bash k8s-amazonlinux.sh worker"
+  echo "  sudo bash k8s-amazonlinux.sh master [K8S_VERSION]"
+  echo "  sudo bash k8s-amazonlinux.sh worker [K8S_VERSION]"
   echo
   echo "Examples:"
-  echo "  sudo bash k8s-amazonlinux.sh master 10.0.1.10"
+  echo "  sudo bash k8s-amazonlinux.sh master"
   echo "  sudo bash k8s-amazonlinux.sh worker"
+  echo "  sudo bash k8s-amazonlinux.sh master v1.35"
   exit 1
 }
 
@@ -23,10 +22,6 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 if [[ "$ROLE" != "master" && "$ROLE" != "worker" ]]; then
-  usage
-fi
-
-if [[ "$ROLE" == "master" && -z "$MASTER_IP" ]]; then
   usage
 fi
 
@@ -107,51 +102,51 @@ dnf install -y kubelet kubeadm kubectl --disableexcludes=kubernetes
 systemctl enable --now kubelet
 
 if [[ "$ROLE" == "master" ]]; then
-  echo "===== Initialize control plane ====="
-  kubeadm init \
-    --apiserver-advertise-address="${MASTER_IP}" \
-    --pod-network-cidr="${POD_CIDR}" \
-    --ignore-preflight-errors=NumCPU
+  echo "===== Master node prerequisites completed ====="
+  echo "Run kubeadm init manually, for example:"
+  echo "sudo kubeadm init --apiserver-advertise-address=<MASTER_PRIVATE_IP> --pod-network-cidr=192.168.0.0/16"
+  echo
+  echo "After kubeadm init succeeds, this script can be run again safely to place kubeconfig for ${USER_NAME} if admin.conf exists."
+fi
 
+if [[ "$ROLE" == "worker" ]]; then
+  echo "===== Worker node prerequisites completed ====="
+  echo "After master is initialized, run the join command on this worker."
+fi
+
+if [[ "$ROLE" == "master" && -f /etc/kubernetes/admin.conf ]]; then
   echo "===== Configure kubectl for ${USER_NAME} ====="
-  mkdir -p "${USER_HOME}/.kube"
-  cp -i /etc/kubernetes/admin.conf "${USER_HOME}/.kube/config"
-  chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.kube"
-
-  export KUBECONFIG=/etc/kubernetes/admin.conf
-
-  echo "===== Install Calico CNI ====="
-  kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.31.4/manifests/calico.yaml
-
-  echo "===== Wait a few seconds and show nodes ====="
-  sleep 10
-  kubectl get nodes -o wide
-  kubectl get pods -A
-
-  echo "===== Worker join command ====="
-  kubeadm token create --print-join-command
-
-  echo "===== IMPORTANT ====="
-  echo "Copy the join command above and run it on worker nodes"
-
-else
-  echo "===== Worker setup completed ====="
-  echo "Run the join command from the master node, for example:"
-  echo "kubeadm join <MASTER_IP>:6443 --token <TOKEN> --discovery-token-ca-cert-hash sha256:<HASH>"
+  if [[ ! -f "${USER_HOME}/.kube/config" ]]; then
+    mkdir -p "${USER_HOME}/.kube"
+    cp /etc/kubernetes/admin.conf "${USER_HOME}/.kube/config"
+    chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.kube"
+  fi
 fi
 
 echo "===== Done ====="
 
 : <<'COMMENT'
 # On master node
-curl -O https://raw.githubusercontent.com/iamhp34/kubernetes/main/amazonlinux/k8s-amazonlinux.sh
+curl -L -o k8s-amazonlinux.sh https://raw.githubusercontent.com/iamhp34/kubernetes/main/AmazonLinux
 chmod +x k8s-amazonlinux.sh
-sudo ./k8s-amazonlinux.sh master 10.0.1.10
+sudo ./k8s-amazonlinux.sh master
+
+# Then run manually on master
+sudo kubeadm init --apiserver-advertise-address=<MASTER_PRIVATE_IP> --pod-network-cidr=192.168.0.0/16
+
+# Install CNI manually on master
+kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.31.4/manifests/calico.yaml
+
+# If needed, rerun script once more on master to place kubeconfig automatically
+sudo ./k8s-amazonlinux.sh master
 COMMENT
 
 : <<'COMMENT'
 # On worker node
-curl -O https://raw.githubusercontent.com/iamhp34/kubernetes/main/amazonlinux/k8s-amazonlinux.sh
+curl -L -o k8s-amazonlinux.sh https://raw.githubusercontent.com/iamhp34/kubernetes/main/AmazonLinux
 chmod +x k8s-amazonlinux.sh
 sudo ./k8s-amazonlinux.sh worker
+
+# Then run the join command manually on worker
+sudo kubeadm join <MASTER_IP>:6443 --token <TOKEN> --discovery-token-ca-cert-hash sha256:<HASH>
 COMMENT
