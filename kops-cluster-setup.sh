@@ -1,108 +1,82 @@
 #!/bin/bash
 set -e
 
-echo "Starting kops and kubectl setup..."
+# --- CONFIGURATION ---
+# Change 'my-unique-kops-state' to something globally unique
+BUCKET_NAME="my-kops-state-store-$(date +%s)" 
+REGION="ap-south-1"
+ZONE="ap-south-1a"
+CLUSTER_NAME="mykopscluster.k8s.local"
 
-# Install kops
-curl -LO https://github.com/kubernetes/kops/releases/latest/download/kops-linux-amd64
-chmod +x kops-linux-amd64
-sudo mv kops-linux-amd64 /usr/local/bin/kops
+echo "---------------------------------------------------------"
+echo "Starting kops and kubectl setup for $CLUSTER_NAME"
+echo "---------------------------------------------------------"
 
-echo "kops installed:"
-kops version
+# 1. Install kops
+if ! command -v kops &> /dev/null; then
+    echo "Installing kops..."
+    curl -LO https://github.com/kubernetes/kops/releases/latest/download/kops-linux-amd64
+    chmod +x kops-linux-amd64
+    sudo mv kops-linux-amd64 /usr/local/bin/kops
+else
+    echo "kops already installed: $(kops version --short)"
+fi
 
-# Install kubectl
-curl -LO https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl
-chmod +x kubectl
-sudo mv kubectl /usr/local/bin/kubectl
+# 2. Install kubectl
+if ! command -v kubectl &> /dev/null; then
+    echo "Installing kubectl..."
+    curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+    chmod +x kubectl
+    sudo mv kubectl /usr/local/bin/kubectl
+else
+    echo "kubectl already installed: $(kubectl version --client --output=yaml | grep gitVersion)"
+fi
 
-echo "kubectl installed:"
-kubectl version --client
+# 3. Setup Environment Variables & Persistence
+echo "Setting up environment variables..."
+export KOPS_CLUSTER_NAME=$CLUSTER_NAME
+export KOPS_STATE_STORE="s3://$BUCKET_NAME"
 
-# Create local DNS style cluster name
-export KOPS_CLUSTER_NAME=mykopscluster.k8s.local
-echo "export KOPS_CLUSTER_NAME=mykopscluster.k8s.local" >> ~/.bashrc
+# Add to bashrc if not already there
+grep -qxF "export KOPS_CLUSTER_NAME=$CLUSTER_NAME" ~/.bashrc || echo "export KOPS_CLUSTER_NAME=$CLUSTER_NAME" >> ~/.bashrc
+grep -qxF "export KOPS_STATE_STORE=s3://$BUCKET_NAME" ~/.bashrc || echo "export KOPS_STATE_STORE=s3://$BUCKET_NAME" >> ~/.bashrc
 
-echo "Local DNS cluster name set:"
-echo $KOPS_CLUSTER_NAME
-
-echo "Setup completed successfully."
-echo "Now run: source ~/.bashrc"
-
-
-: <<'KOPS_FLOW'
-
-=========================================================
-STEP 1: CREATE S3 BUCKET (STATE STORE)
-=========================================================
+# 4. Create S3 Bucket (State Store)
+echo "Creating S3 bucket: $BUCKET_NAME in $REGION..."
 aws s3api create-bucket \
-  --bucket my-kops-state-store-<unique-name> \
-  --region ap-south-1 \
-  --create-bucket-configuration LocationConstraint=ap-south-1
+    --bucket "$BUCKET_NAME" \
+    --region "$REGION" \
+    --create-bucket-configuration LocationConstraint="$REGION"
 
-=========================================================
-STEP 2: EXPORT VARIABLES
-=========================================================
-export KOPS_CLUSTER_NAME=mykopscluster.k8s.local
-export KOPS_STATE_STORE=s3://my-kops-state-store-<unique-name>
+# 5. Generate SSH Key (ED25519)
+if [ ! -f ~/.ssh/id_ed25519_kops ]; then
+    echo "Generating SSH key for cluster access..."
+    ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_kops -N ""
+else
+    echo "SSH key already exists at ~/.ssh/id_ed25519_kops"
+fi
 
-=========================================================
-STEP 3: GENERATE SSH KEY
-=========================================================
-ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_kops -N ""
-
-=========================================================
-STEP 4: CREATE CLUSTER (DEFINE ONLY)
-=========================================================
+# 6. Create Cluster Definition (Single AZ)
+echo "Defining cluster configuration..."
 kops create cluster \
-  --name=${KOPS_CLUSTER_NAME} \
-  --cloud=aws \
-  --state=${KOPS_STATE_STORE} \
-  --zones=ap-south-1a \
-  --node-count=2 \
-  --node-size=t3.medium \
-  --control-plane-size=t3.medium \
-  --ssh-public-key=~/.ssh/id_ed25519_kops.pub
+    --name="${KOPS_CLUSTER_NAME}" \
+    --cloud=aws \
+    --state="${KOPS_STATE_STORE}" \
+    --zones="${ZONE}" \
+    --node-count=2 \
+    --node-size=t3.medium \
+    --control-plane-size=t3.medium \
+    --ssh-public-key=~/.ssh/id_ed25519_kops.pub
 
-=========================================================
-STEP 5: APPLY (ACTUAL CREATION)
-=========================================================
-kops update cluster \
-  --name=${KOPS_CLUSTER_NAME} \
-  --state=${KOPS_STATE_STORE} \
-  --yes --admin
+# 7. Build the Cluster
+echo "Applying configuration (this will take a few minutes)..."
+kops update cluster --name "${KOPS_CLUSTER_NAME}" --yes --admin
 
-=========================================================
-STEP 6: VALIDATE CLUSTER
-=========================================================
-kops validate cluster --wait 10m
-
-=========================================================
-STEP 7: CHECK NODES
-=========================================================
-kubectl get nodes
-kubectl get pods -A
-
-=========================================================
-STEP 8: DELETE CLUSTER (CLEANUP)
-=========================================================
-kops delete cluster \
-  --name=${KOPS_CLUSTER_NAME} \
-  --state=${KOPS_STATE_STORE} \
-  --yes
-
-=========================================================
-STEP 9: DELETE S3 BUCKET
-=========================================================
-aws s3 rb ${KOPS_STATE_STORE} --force
-
-=========================================================
-
-NOTES:
-- Replace <unique-name> with a unique bucket name
-- Always run: source ~/.bashrc before using variables
-- Never skip "kops update cluster --yes"
-
-=========================================================
-
-KOPS_FLOW
+echo "---------------------------------------------------------"
+echo "SETUP INITIATED SUCCESSFULLY"
+echo "---------------------------------------------------------"
+echo "1. Run: source ~/.bashrc"
+echo "2. Wait 5-10 mins, then run: kops validate cluster --wait 15m"
+echo "3. To delete everything later, run: "
+echo "   kops delete cluster --name \$KOPS_CLUSTER_NAME --yes"
+echo "   aws s3 rb \$KOPS_STATE_STORE --force"
