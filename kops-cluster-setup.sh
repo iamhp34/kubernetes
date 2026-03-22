@@ -80,3 +80,77 @@ echo "2. Wait 5-10 mins, then run: kops validate cluster --wait 15m"
 echo "3. To delete everything later, run: "
 echo "   kops delete cluster --name \$KOPS_CLUSTER_NAME --yes"
 echo "   aws s3 rb \$KOPS_STATE_STORE --force"
+
+: <<'KOPS_FULL_FLOW'
+
+=========================================================
+REFRESH ENVIRONMENT
+=========================================================
+source ~/.bashrc
+
+=========================================================
+DOWNLOAD AND RUN SETUP SCRIPT
+=========================================================
+curl -L -o kops-cluster-setup.sh https://raw.githubusercontent.com/iamhp34/kubernetes/main/kops-cluster-setup.sh
+chmod +x kops-cluster-setup.sh
+./kops-cluster-setup.sh
+
+=========================================================
+EDIT INSTANCE GROUPS (OPTIONAL)
+=========================================================
+
+# Edit worker nodes
+kops edit ig nodes-ap-south-1a --name ${KOPS_CLUSTER_NAME}
+
+# Edit control plane (master)
+kops edit ig control-plane-ap-south-1a --name ${KOPS_CLUSTER_NAME}
+
+# Set fixed node count (example: 3 nodes)
+kops edit ig nodes-ap-south-1a \
+  --name ${KOPS_CLUSTER_NAME} \
+  --set spec.minSize=3 \
+  --set spec.maxSize=3
+
+=========================================================
+APPLY CHANGES (IMPORTANT)
+=========================================================
+kops update cluster \
+  --name ${KOPS_CLUSTER_NAME} \
+  --state ${KOPS_STATE_STORE} \
+  --yes --admin
+
+=========================================================
+VALIDATE CLUSTER
+=========================================================
+kops validate cluster --wait 10m
+
+=========================================================
+CHECK CLUSTER
+=========================================================
+kubectl get nodes
+kubectl get pods -A
+
+=========================================================
+DELETE CLUSTER (CLEANUP)
+=========================================================
+kops delete cluster \
+  --name ${KOPS_CLUSTER_NAME} \
+  --state ${KOPS_STATE_STORE} \
+  --yes
+
+=========================================================
+DELETE S3 STATE STORE
+=========================================================
+aws s3 rb ${KOPS_STATE_STORE} --force
+
+=========================================================
+
+NOTES:
+- Always run "source ~/.bashrc" before using variables
+- Do NOT skip "kops update cluster --yes"
+- Editing IG requires update cluster again
+- S3 bucket is NOT deleted automatically
+
+=========================================================
+
+KOPS_FULL_FLOW
