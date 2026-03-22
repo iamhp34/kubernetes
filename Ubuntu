@@ -38,7 +38,7 @@ sed -i.bak '/[[:space:]]swap[[:space:]]/ s/^/#/' /etc/fstab || true
 
 echo "===== Handle firewall if UFW exists ====="
 if command -v ufw >/dev/null 2>&1; then
-  echo "WARNING: ufw is being disabled (not recommended for production)"
+  echo "WARNING: UFW is being disabled (not recommended for production)"
   ufw disable || true
 fi
 
@@ -61,8 +61,8 @@ EOF
 sysctl --system
 
 echo "===== Update packages ====="
-apt-get update -y
-apt-get install -y apt-transport-https ca-certificates curl gpg software-properties-common
+apt-get update
+apt-get install -y apt-transport-https ca-certificates curl gpg
 
 echo "===== Install containerd ====="
 apt-get install -y containerd
@@ -82,13 +82,13 @@ systemctl status containerd --no-pager || true
 echo "===== Add Kubernetes repo ====="
 mkdir -p -m 755 /etc/apt/keyrings
 curl -fsSL "https://pkgs.k8s.io/core:/stable:/${K8S_VERSION}/deb/Release.key" \
-  | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+  | gpg --dearmor --batch --yes -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
 
 cat >/etc/apt/sources.list.d/kubernetes.list <<EOF
 deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/${K8S_VERSION}/deb/ /
 EOF
 
-apt-get update -y
+apt-get update
 
 echo "===== Install kubelet kubeadm kubectl ====="
 apt-get install -y kubelet kubeadm kubectl
@@ -101,7 +101,7 @@ if [[ "$ROLE" == "master" ]]; then
   echo "Run kubeadm init manually, for example:"
   echo "sudo kubeadm init --apiserver-advertise-address=<MASTER_PRIVATE_IP> --pod-network-cidr=192.168.0.0/16"
   echo
-  echo "After kubeadm init succeeds, this script can be run again safely to place kubeconfig for ${USER_NAME} if admin.conf exists."
+  echo "After kubeadm init succeeds, re-run this script once to place kubeconfig automatically if /etc/kubernetes/admin.conf exists."
 fi
 
 if [[ "$ROLE" == "worker" ]]; then
@@ -122,18 +122,17 @@ echo "===== Done ====="
 
 : <<'COMMENT'
 # On master node
+curl -L -o k8s-ubuntu.sh https://raw.githubusercontent.com/iamhp34/kubernetes/main/Ubuntu
 chmod +x k8s-ubuntu.sh
 sudo ./k8s-ubuntu.sh master
 
 # Then run manually on master
 sudo kubeadm init --apiserver-advertise-address=<MASTER_PRIVATE_IP> --pod-network-cidr=192.168.0.0/16
 
-# Configure kubectl for current user
-mkdir -p $HOME/.kube
-sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
-sudo chown $(id -u):$(id -g) $HOME/.kube/config
+# Re-run script once to place kubeconfig automatically
+sudo ./k8s-ubuntu.sh master
 
-# Install Calico CNI on master
+# Install Calico CNI manually on master
 kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.31.4/manifests/calico.yaml
 
 # Verify Calico
@@ -142,6 +141,7 @@ COMMENT
 
 : <<'COMMENT'
 # On worker node
+curl -L -o k8s-ubuntu.sh https://raw.githubusercontent.com/iamhp34/kubernetes/main/Ubuntu
 chmod +x k8s-ubuntu.sh
 sudo ./k8s-ubuntu.sh worker
 
