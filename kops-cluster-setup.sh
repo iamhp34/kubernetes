@@ -64,8 +64,8 @@ kops create cluster \
     --state="${KOPS_STATE_STORE}" \
     --zones="${ZONE}" \
     --node-count=2 \
-    --node-size=t3.medium \
-    --control-plane-size=t3.medium \
+    --node-size=t2.micro \
+    --control-plane-size=t2.micro \
     --ssh-public-key=~/.ssh/id_ed25519_kops.pub
 
 # 7. Build the Cluster
