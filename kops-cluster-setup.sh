@@ -1,185 +1,108 @@
 #!/bin/bash
-set -euo pipefail
+set -e
 
-# =========================================================
-# kops + kubectl installation and initial cluster setup
-# =========================================================
-# What this script does:
-# 1. Downloads and installs kops
-# 2. Downloads and installs kubectl
-# 3. Sets local DNS style for kops using gossip DNS (*.k8s.local)
-# 4. Creates an Amazon Simple Storage Service bucket for kops state
-# 5. Exports KOPS_CLUSTER_NAME and KOPS_STATE_STORE
-# 6. Generates a Secure Shell key pair for the cluster
-#
-# Requirements:
-# - Linux machine
-# - curl installed
-# - Amazon Web Services Command Line Interface installed and configured
-# - Valid Amazon Web Services credentials
-# =========================================================
+echo "Starting kops and kubectl setup..."
 
-# -----------------------------
-# User-editable variables
-# -----------------------------
-AWS_REGION="ap-south-1"
-CLUSTER_PREFIX="mykopscluster"
-BUCKET_PREFIX="my-kops-state-store"
-SSH_KEY_PATH="$HOME/.ssh/id_ed25519_kops"
+# Install kops
+curl -LO https://github.com/kubernetes/kops/releases/latest/download/kops-linux-amd64
+chmod +x kops-linux-amd64
+sudo mv kops-linux-amd64 /usr/local/bin/kops
 
-# -----------------------------
-# Derived variables
-# -----------------------------
-KOPS_CLUSTER_NAME="${CLUSTER_PREFIX}.k8s.local"
-S3_BUCKET_NAME="${BUCKET_PREFIX}-${RANDOM}-$(date +%s)"
-KOPS_STATE_STORE="s3://${S3_BUCKET_NAME}"
+echo "kops installed:"
+kops version
 
-# -----------------------------
-# Helper functions
-# -----------------------------
-log() {
-  echo
-  echo "=================================================="
-  echo "$1"
-  echo "=================================================="
-}
-
-require_command() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    echo "Error: Required command not found: $1"
-    exit 1
-  fi
-}
-
-# -----------------------------
-# Pre-checks
-# -----------------------------
-log "Checking required commands"
-require_command curl
-require_command chmod
-require_command sudo
-require_command aws
-
-# -----------------------------
-# Download and install kops
-# -----------------------------
-log "Downloading and installing kops"
-
-KOPS_VERSION="$(curl -s https://api.github.com/repos/kubernetes/kops/releases/latest | grep tag_name | cut -d '"' -f 4)"
-curl -Lo kops "https://github.com/kubernetes/kops/releases/download/${KOPS_VERSION}/kops-linux-amd64"
-chmod +x kops
-sudo mv kops /usr/local/bin/kops
-
-echo "Installed kops version:"
-kops version || true
-
-# -----------------------------
-# Download and install kubectl
-# -----------------------------
-log "Downloading and installing kubectl"
-
-KUBECTL_VERSION="$(curl -s -L https://dl.k8s.io/release/stable.txt)"
-curl -Lo kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+# Install kubectl
+curl -LO https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl
 chmod +x kubectl
 sudo mv kubectl /usr/local/bin/kubectl
 
-echo "Installed kubectl version:"
-kubectl version --client || true
+echo "kubectl installed:"
+kubectl version --client
 
-# -----------------------------
-# Local DNS via gossip DNS
-# -----------------------------
-log "Configuring local DNS style for kops"
+# Create local DNS style cluster name
+export KOPS_CLUSTER_NAME=mykopscluster.k8s.local
+echo "export KOPS_CLUSTER_NAME=mykopscluster.k8s.local" >> ~/.bashrc
 
-echo "Using gossip DNS with cluster name: ${KOPS_CLUSTER_NAME}"
-echo "For kops local DNS, the cluster name must end with .k8s.local"
+echo "Local DNS cluster name set:"
+echo $KOPS_CLUSTER_NAME
 
-# -----------------------------
-# Create Amazon Simple Storage Service bucket
-# -----------------------------
-log "Creating Amazon Simple Storage Service bucket for kops state store"
+echo "Setup completed successfully."
+echo "Now run: source ~/.bashrc"
 
-# us-east-1 requires different create command
-if [ "${AWS_REGION}" = "us-east-1" ]; then
-  aws s3api create-bucket \
-    --bucket "${S3_BUCKET_NAME}" \
-    --region "${AWS_REGION}"
-else
-  aws s3api create-bucket \
-    --bucket "${S3_BUCKET_NAME}" \
-    --region "${AWS_REGION}" \
-    --create-bucket-configuration LocationConstraint="${AWS_REGION}"
-fi
 
-echo "Created bucket: ${S3_BUCKET_NAME}"
+: <<'KOPS_FLOW'
 
-# Optional but recommended for versioning
-aws s3api put-bucket-versioning \
-  --bucket "${S3_BUCKET_NAME}" \
-  --versioning-configuration Status=Enabled
+=========================================================
+STEP 1: CREATE S3 BUCKET (STATE STORE)
+=========================================================
+aws s3api create-bucket \
+  --bucket my-kops-state-store-<unique-name> \
+  --region ap-south-1 \
+  --create-bucket-configuration LocationConstraint=ap-south-1
 
-echo "Enabled versioning on bucket: ${S3_BUCKET_NAME}"
+=========================================================
+STEP 2: EXPORT VARIABLES
+=========================================================
+export KOPS_CLUSTER_NAME=mykopscluster.k8s.local
+export KOPS_STATE_STORE=s3://my-kops-state-store-<unique-name>
 
-# -----------------------------
-# Export environment variables
-# -----------------------------
-log "Exporting environment variables"
+=========================================================
+STEP 3: GENERATE SSH KEY
+=========================================================
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_kops -N ""
 
-export KOPS_CLUSTER_NAME="${KOPS_CLUSTER_NAME}"
-export KOPS_STATE_STORE="${KOPS_STATE_STORE}"
+=========================================================
+STEP 4: CREATE CLUSTER (DEFINE ONLY)
+=========================================================
+kops create cluster \
+  --name=${KOPS_CLUSTER_NAME} \
+  --cloud=aws \
+  --state=${KOPS_STATE_STORE} \
+  --zones=ap-south-1a \
+  --node-count=2 \
+  --node-size=t3.medium \
+  --control-plane-size=t3.medium \
+  --ssh-public-key=~/.ssh/id_ed25519_kops.pub
 
-echo "export KOPS_CLUSTER_NAME=${KOPS_CLUSTER_NAME}" | tee -a "$HOME/.bashrc"
-echo "export KOPS_STATE_STORE=${KOPS_STATE_STORE}" | tee -a "$HOME/.bashrc"
+=========================================================
+STEP 5: APPLY (ACTUAL CREATION)
+=========================================================
+kops update cluster \
+  --name=${KOPS_CLUSTER_NAME} \
+  --state=${KOPS_STATE_STORE} \
+  --yes --admin
 
-echo "Environment variables for current session:"
-echo "KOPS_CLUSTER_NAME=${KOPS_CLUSTER_NAME}"
-echo "KOPS_STATE_STORE=${KOPS_STATE_STORE}"
+=========================================================
+STEP 6: VALIDATE CLUSTER
+=========================================================
+kops validate cluster --wait 10m
 
-# -----------------------------
-# Generate Secure Shell key pair
-# -----------------------------
-log "Generating Secure Shell key pair"
+=========================================================
+STEP 7: CHECK NODES
+=========================================================
+kubectl get nodes
+kubectl get pods -A
 
-if [ ! -f "${SSH_KEY_PATH}" ]; then
-  ssh-keygen -t ed25519 -f "${SSH_KEY_PATH}" -N ""
-  echo "Secure Shell key created at: ${SSH_KEY_PATH}"
-else
-  echo "Secure Shell key already exists at: ${SSH_KEY_PATH}"
-fi
+=========================================================
+STEP 8: DELETE CLUSTER (CLEANUP)
+=========================================================
+kops delete cluster \
+  --name=${KOPS_CLUSTER_NAME} \
+  --state=${KOPS_STATE_STORE} \
+  --yes
 
-# -----------------------------
-# Final output
-# -----------------------------
-log "Setup complete"
+=========================================================
+STEP 9: DELETE S3 BUCKET
+=========================================================
+aws s3 rb ${KOPS_STATE_STORE} --force
 
-cat <<EOF
-kops and kubectl are installed.
+=========================================================
 
-RUN:
-curl -O https://raw.githubusercontent.com/iamhp34/kubernetes/main/kops-cluster-setup.sh
-chmod +x kops-cluster-setup.sh
-./kops-cluster-setup.sh
+NOTES:
+- Replace <unique-name> with a unique bucket name
+- Always run: source ~/.bashrc before using variables
+- Never skip "kops update cluster --yes"
 
-Cluster name:
-  ${KOPS_CLUSTER_NAME}
+=========================================================
 
-State store:
-  ${KOPS_STATE_STORE}
-
-Secure Shell public key:
-  ${SSH_KEY_PATH}.pub
-
-Next step example:
-  kops create cluster \\
-    --name=\${KOPS_CLUSTER_NAME} \\
-    --cloud=aws \\
-    --state=\${KOPS_STATE_STORE} \\
-    --zones=${AWS_REGION}a \\
-    --node-count=1 \\
-    --node-size=t3.medium \\
-    --control-plane-size=t3.medium \\
-    --ssh-public-key=${SSH_KEY_PATH}.pub
-
-Then apply it with:
-  kops update cluster --name=\${KOPS_CLUSTER_NAME} --yes --admin
-EOF
+KOPS_FLOW
